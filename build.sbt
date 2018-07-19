@@ -38,3 +38,4 @@ libraryDependencies ++= {
   )
 }
 fork in Test := true
+fork in run := true

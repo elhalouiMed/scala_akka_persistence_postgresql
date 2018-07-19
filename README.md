@@ -1,6 +1,6 @@
 # scala_akka_persistence_postgresql
 
-This is a small example off akka persistence with postgresql
+this is a very simple example of akka stream over tcp socket and use akka persistence jdbc plugin (postgresql)
 this example is base on https://github.com/dnvriend/akka-persistence-jdbc.git repository
 
 you need to have docker installer in your machine

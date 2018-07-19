@@ -1,65 +1,67 @@
 package actors
 
 import akka.actor.{ ActorLogging, SupervisorStrategy }
-import akka.cluster.sharding.ShardRegion
 import akka.event.LoggingReceive
 import akka.persistence.PersistentActor
+import akka.stream.actor.{ ActorSubscriber, MaxInFlightRequestStrategy }
 
 import scala.concurrent.duration._
 
 object Person {
 
-  sealed trait Command
-  final case class CreatePerson(firstName: String, lastName: String, timestamp: Long) extends Command
-  // events
-  sealed trait Event
-  final case class PersonCreated(firstName: String, lastName: String, timestamp: Long) extends Event
-  // the state
-  final case class PersonState(firstName: String = "", lastName: String = "")
-
-  // necessary for cluster sharding
-  final case class EntityEnvelope(id: String, payload: Any)
-
-  final val NumberOfShards: Int = 100
-
-  val extractEntityId: ShardRegion.ExtractEntityId = {
-    case EntityEnvelope(id, payload) ⇒ (id.toString, payload)
+  case class FlightData(from: String, to: String, distanceMiles: Int, delayMinutes: Int)
+  object FlightData {
+    def apply(fields: Array[String]): Option[FlightData] = {
+      try {
+        Some(FlightData(fields(16), fields(17), fields(18).toInt, fields(14).toInt))
+      } catch {
+        case _: Exception => None
+      }
+    }
   }
 
-  val extractShardId: ShardRegion.ExtractShardId = {
-    case EntityEnvelope(id, _) ⇒ (id.hashCode % NumberOfShards).toString
+  case class FlightWithDelayPerMile(flight: FlightData, delayPerMile: Double) extends Comparable[FlightWithDelayPerMile] {
+    override def compareTo(o: FlightWithDelayPerMile) = delayPerMile.compareTo(o.delayPerMile)
   }
-
-  final val PersonShardName = "Person"
+  object FlightWithDelayPerMile {
+    def apply(data: FlightData): Option[FlightWithDelayPerMile] = {
+      if (data.delayMinutes > 0) {
+        Some(FlightWithDelayPerMile(data, 60.0d * data.delayMinutes / data.distanceMiles))
+      } else None
+    }
+  }
 }
-class Person extends PersistentActor with ActorLogging {
+class Person extends PersistentActor with ActorSubscriber with ActorLogging {
   import Person._
 
-  override val persistenceId: String = "Person-" + self.path.name
+  private var inFlight = 0
+  override protected def requestStrategy = new MaxInFlightRequestStrategy(10) {
+    override def inFlightInternally = inFlight
+  }
+
+  override val persistenceId: String = "Persistence_postgre_actor"
 
   context.setReceiveTimeout(300.millis)
 
-  var state = PersonState()
-
-  def handleEvent(event: Event): Unit = event match {
-    case PersonCreated(firstName, lastName, _) ⇒ state = state.copy(firstName = firstName, lastName = lastName)
-
-  }
+  //var state = PersonState()
 
   override def receiveRecover: Receive = LoggingReceive {
-    case event: Event ⇒ {
-      println(s"Recover event ${event}")
-      handleEvent(event)
-    }
+    case default =>
+      println(s"recover ${default}")
   }
 
   def now: Long = System.currentTimeMillis()
 
   override def receiveCommand: Receive = LoggingReceive {
-    case CreatePerson(firstName, lastName, _) ⇒ {
-      println(s"Receive command CreatePerson(${firstName},${lastName}) ")
-      persist(PersonCreated(firstName, lastName, now))(handleEvent)
-    }
+    // continue here
+    case data: FlightData =>
+      FlightWithDelayPerMile(data).foreach { d =>
+        inFlight += 1
+        persistAsync(d) { _ =>
+          println(s"data to persist => ${d}")
+          inFlight -= 1
+        }
+      }
     case SupervisorStrategy.Stop ⇒ context.stop(self)
   }
 
